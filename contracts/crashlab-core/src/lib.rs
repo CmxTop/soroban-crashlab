@@ -1,5 +1,8 @@
 pub mod reproducer;
+pub mod taxonomy;
+
 pub use reproducer::{filter_ci_pack, FlakyDetector, ReproReport};
+pub use taxonomy::{classify_failure, group_by_class, FailureClass};
 
 pub mod seed_validator;
 pub use seed_validator::{SeedSchema, SeedValidationError, Validate};
