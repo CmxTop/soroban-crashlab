@@ -1,4 +1,5 @@
 pub mod auth_matrix;
+pub mod prng;
 pub mod reproducer;
 pub mod taxonomy;
 
@@ -17,6 +18,8 @@ pub use env_fingerprint::{
     EnvironmentFingerprint, ReplayEnvironmentReport, check_bundle_replay_environment,
     check_replay_environment,
 };
+pub mod boundary;
+pub use boundary::{BoundaryMutator, generate_boundary_vectors};
 
 /// Wrapper for the legacy bit-flipper mutation logic.
 pub struct DefaultMutator;
@@ -83,16 +86,12 @@ impl CaseBundle {
 }
 
 pub fn mutate_seed(seed: &CaseSeed) -> CaseSeed {
-    let mut x = seed.id ^ 0x9E37_79B9_7F4A_7C15;
-    let mut payload = seed.payload.clone();
-
-    for item in &mut payload {
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        let mask = (x as u8) & 0x0F;
-        *item ^= mask;
-    }
+    let mut rng = SeededPrng::new(seed.id);
+    let payload = seed
+        .payload
+        .iter()
+        .map(|b| b ^ rng.next_byte())
+        .collect();
 
     CaseSeed {
         id: seed.id,
