@@ -301,17 +301,17 @@ mod tests {
     #[test]
     fn signatures_match_requires_category_digest_and_signature_hash() {
         let expected = CrashSignature {
-            category: "runtime-failure",
+            category: "runtime-failure".to_string(),
             digest: 11,
             signature_hash: 22,
         };
         let same = CrashSignature {
-            category: "runtime-failure",
+            category: "runtime-failure".to_string(),
             digest: 11,
             signature_hash: 22,
         };
         let different_digest = CrashSignature {
-            category: "runtime-failure",
+            category: "runtime-failure".to_string(),
             digest: 99,
             signature_hash: 22,
         };

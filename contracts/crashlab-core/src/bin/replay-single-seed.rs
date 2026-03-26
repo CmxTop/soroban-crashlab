@@ -31,6 +31,7 @@ struct JsonBundle {
     seed: JsonSeed,
     signature: JsonSignature,
     environment: Option<JsonEnvironment>,
+    failure_payload: Option<Vec<u8>>,
 }
 
 fn parse_bundle(path: &Path) -> Result<CaseBundle, String> {
@@ -53,13 +54,14 @@ fn parse_bundle(path: &Path) -> Result<CaseBundle, String> {
             payload: parsed.seed.payload,
         },
         signature: CrashSignature {
-            category,
+            category: category.to_string(),
             digest: parsed.signature.digest,
             signature_hash: parsed.signature.signature_hash,
         },
         environment: parsed.environment.map(|env| {
             EnvironmentFingerprint::new(env.os, env.arch, env.family, env.tool_version)
         }),
+        failure_payload: parsed.failure_payload.unwrap_or_default(),
     })
 }
 
