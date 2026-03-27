@@ -15,4 +15,20 @@ export interface FuzzingRun {
     duration: number;
     /** Number of seeds used/generated during the run */
     seedCount: number;
+    /** CPU instructions consumed by the run */
+    cpuInstructions: number;
+    /** Memory bytes consumed by the run */
+    memoryBytes: number;
+    /** Minimum resource fee measured for the run */
+    minResourceFee: number;
+}
+
+export type LedgerChangeType = 'created' | 'updated' | 'deleted';
+
+export interface LedgerStateChange {
+    id: string;
+    entryType: string;
+    changeType: LedgerChangeType;
+    before?: string;
+    after?: string;
 }
