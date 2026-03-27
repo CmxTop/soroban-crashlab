@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState, useEffect, useRef } from 'react';
 import RunHistoryTable from './RunHistoryTable';
 import Pagination from './Pagination';
@@ -11,9 +12,28 @@ const MOCK_RUNS: FuzzingRun[] = Array.from({ length: 25 }, (_, i) => ({
   status: (['completed', 'failed', 'running', 'cancelled'][i % 4]) as RunStatus,
   duration: 120000 + (Math.random() * 3600000), // 2m to 1h
   seedCount: Math.floor(10000 + Math.random() * 90000),
+  cpuInstructions: Math.floor(400000 + Math.random() * 900000),
+  memoryBytes: Math.floor(1_500_000 + Math.random() * 8_000_000),
+  minResourceFee: Math.floor(500 + Math.random() * 5000),
 })).reverse();
 
 const ITEMS_PER_PAGE = 10;
+const CPU_WARNING = 900_000;
+const MEMORY_WARNING = 7_000_000;
+const FEE_WARNING = 3_000;
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatFee = (fee: number): string => `${fee.toLocaleString()} stroops`;
+
+const isExpensiveRun = (run: FuzzingRun): boolean =>
+  run.cpuInstructions >= CPU_WARNING ||
+  run.memoryBytes >= MEMORY_WARNING ||
+  run.minResourceFee >= FEE_WARNING;
 
 export default function Home() {
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
@@ -25,6 +45,7 @@ export default function Home() {
   const totalPages = Math.ceil(MOCK_RUNS.length / ITEMS_PER_PAGE);
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const paginatedRuns = MOCK_RUNS.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  const expensiveRuns = paginatedRuns.filter(isExpensiveRun);
 
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
@@ -188,6 +209,34 @@ export default function Home() {
             {MOCK_RUNS.length} Total Runs
           </div>
         </div>
+
+        <div className="mb-5 border border-amber-200 dark:border-amber-900/50 rounded-xl p-4 bg-amber-50/70 dark:bg-amber-950/20">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-200">Resource Fee Insight</h3>
+            <span className="text-xs text-amber-800 dark:text-amber-300">
+              thresholds: cpu &ge; {CPU_WARNING.toLocaleString()}, mem &ge; {formatBytes(MEMORY_WARNING)}, fee &ge; {formatFee(FEE_WARNING)}
+            </span>
+          </div>
+
+          {expensiveRuns.length === 0 ? (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">No expensive runs on this page.</p>
+          ) : (
+            <ul className="space-y-2">
+              {expensiveRuns.map((run) => (
+                <li key={run.id} className="text-sm flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-white/60 dark:bg-zinc-900/40 rounded-lg px-3 py-2 border border-amber-100 dark:border-amber-900/40">
+                  <div className="font-mono text-zinc-800 dark:text-zinc-200">{run.id}</div>
+                  <div className="text-zinc-700 dark:text-zinc-300">
+                    cpu {run.cpuInstructions.toLocaleString()} &middot; mem {formatBytes(run.memoryBytes)} &middot; min fee {formatFee(run.minResourceFee)}
+                  </div>
+                  <Link href={`/runs/${run.id}`} className="text-amber-700 dark:text-amber-300 hover:underline underline-offset-4 font-medium">
+                    View run details
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
         <RunHistoryTable runs={paginatedRuns} />
         <Pagination
           currentPage={currentPage}

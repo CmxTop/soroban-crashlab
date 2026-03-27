@@ -9,7 +9,10 @@ pub use prng::SeededPrng;
 pub use health::{
     FailureMetrics, HealthMonitor, HealthStatus, HealthSummary, QueueMetrics, ThroughputMetrics,
 };
-pub use reproducer::{FlakyDetector, ReproReport, filter_ci_pack};
+pub use reproducer::{
+    FlakyDetector, ReproReport, filter_ci_pack, shrink_bundle_payload,
+    shrink_seed_preserving_signature,
+};
 pub use taxonomy::{FailureClass, classify_failure, group_by_class};
 
 pub mod seed_validator;

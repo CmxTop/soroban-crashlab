@@ -10,3 +10,7 @@ serde_json = "1.0"
 [[bin]]
 name = "export-corpus"
 path = "src/bin/export-corpus.rs"
+
+[[bin]]
+name = "import-corpus"
+path = "src/bin/import-corpus.rs"
