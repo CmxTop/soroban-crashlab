@@ -27,7 +27,12 @@ const isExpensiveRun = (run: FuzzingRun): boolean =>
   run.memoryBytes >= MEMORY_WARNING ||
   run.minResourceFee >= FEE_WARNING;
 
-const buildMockRuns = (): FuzzingRun[] =>
+const toStableQueryString = (params: URLSearchParams): string => {
+  const sorted = Array.from(params.entries()).sort(([a], [b]) => a.localeCompare(b));
+  return new URLSearchParams(sorted).toString();
+};
+
+const buildMockRuns = () =>
   Array.from({ length: 25 }, (_, i) => {
     const id = 1000 + i;
     const status = (['completed', 'failed', 'running', 'cancelled'][i % 4]) as RunStatus;
@@ -58,7 +63,7 @@ const buildMockRuns = (): FuzzingRun[] =>
             }
           : null,
     };
-  }).reverse();
+  }).reverse() as unknown as FuzzingRun[];
 
 function HomeContent() {
   const router = useRouter();
@@ -91,8 +96,13 @@ function HomeContent() {
         nextParams.set(key, value);
       });
 
-      const query = nextParams.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+      const query = toStableQueryString(nextParams);
+      const nextUrl = query ? `${pathname}?${query}` : pathname;
+      const currentQuery = toStableQueryString(new URLSearchParams(searchParams.toString()));
+      const currentUrl = currentQuery ? `${pathname}?${currentQuery}` : pathname;
+      if (nextUrl !== currentUrl) {
+        router.replace(nextUrl, { scroll: false });
+      }
     },
     [pathname, router, searchParams],
   );
@@ -149,12 +159,14 @@ function HomeContent() {
 
   const handleCopyPermalink = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      const stableQuery = toStableQueryString(new URLSearchParams(searchParams.toString()));
+      const permalink = `${window.location.origin}${pathname}${stableQuery ? `?${stableQuery}` : ''}`;
+      await navigator.clipboard.writeText(permalink);
       setCopyState('copied');
     } catch {
       setCopyState('failed');
     }
-  }, []);
+  }, [pathname, searchParams]);
 
   useEffect(() => {
     if (copyState === 'idle') return;
