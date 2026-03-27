@@ -42,6 +42,9 @@ export default function CrashDetailDrawer({ run, onClose, onReplayComplete }: Cr
                 duration: 0,
                 seedCount: 1,
                 crashDetail: null,
+                cpuInstructions: 0,
+                memoryBytes: 0,
+                minResourceFee: 0,
             });
         } catch {
             setReplayStatus('failed');

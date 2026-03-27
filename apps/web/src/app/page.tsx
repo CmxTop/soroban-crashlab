@@ -1,13 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { Suspense, useState, useEffect, useRef } from 'react';
+import { Suspense, useState, useEffect, useRef, useCallback } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import RunHistoryTable from './RunHistoryTable';
 import Pagination from './Pagination';
 import CrashDetailDrawer from './CrashDetailDrawer';
 import { FuzzingRun, RunStatus } from './types';
-import CrashDetailDrawer from './CrashDetailDrawer';
 
 // Mock data for demonstration
 const MOCK_RUNS: FuzzingRun[] = Array.from({ length: 25 }, (_, i) => ({
@@ -58,20 +57,19 @@ function HomeContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [runs, setRuns] = useState<FuzzingRun[]>(buildMockRuns);
+  const [runs, setRuns] = useState<FuzzingRun[]>(MOCK_RUNS);
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
   const [showDetailView, setShowDetailView] = useState(false);
   const [showHelp, setShowHelp] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const cardsContainerRef = useRef<HTMLDivElement>(null);
   const selectedRunId = searchParams.get('run');
-
-  const selectedRunId = searchParams.get('run');
   const selectedRun = selectedRunId ? runs.find((run) => run.id === selectedRunId) : null;
 
   const totalPages = Math.ceil(runs.length / ITEMS_PER_PAGE);
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const paginatedRuns = runs.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  const expensiveRuns = paginatedRuns.filter(isExpensiveRun);
 
   const updateSelectedRunInUrl = useCallback(
     (runId: string | null) => {
@@ -179,22 +177,6 @@ function HomeContent() {
     setShowDetailView(true);
   };
 
-  const updateSelectedRunInUrl = (runId: string | null) => {
-    const params = new URLSearchParams(searchParams.toString());
-
-    if (runId) {
-      params.set('run', runId);
-    } else {
-      params.delete('run');
-    }
-
-    const query = params.toString();
-    router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  };
-
-  const handleOpenRunDrawer = (runId: string) => updateSelectedRunInUrl(runId);
-  const handleCloseRunDrawer = () => updateSelectedRunInUrl(null);
-
   return (
     <div className="flex flex-col items-center justify-center py-20 px-8 max-w-5xl mx-auto w-full">
       <div className="text-center max-w-3xl mb-16">
@@ -293,17 +275,6 @@ function HomeContent() {
                 Browse Examples
               </a>
             </div>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full">
-        {/* Card 1 */}
-        <div className="border border-black/[.08] dark:border-white/[.145] rounded-xl p-8 bg-white dark:bg-zinc-950 shadow-sm transition-all hover:shadow-md">
-          <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400 mb-6">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-            </svg>
           </div>
         </div>
       )}
