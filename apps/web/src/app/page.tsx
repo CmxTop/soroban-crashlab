@@ -14,8 +14,40 @@ import CreateRunHeatmapPage55 from './create-run-heatmap-page-55';
 import AlertingSettingsPage54 from './implement-alerting-settings-page-54';
 import { FuzzingRun, RunStatus } from './types';
 import CrossRunBoardWidgets from './implement-cross-run-board-widgets-component';
-import FailureClusterView from './FailureClusterView';
-import { buildMockRuns } from './mockRuns';
+import CrossRunBoardCustomWidgets from './create-cross-run-board-custom-widgets-63';
+import RunClusterVisualization from './add-run-cluster-visualization';
+import RunClusterOverview from './add-run-cluster-overview';
+
+// Mock data for demonstration
+const MOCK_RUNS: FuzzingRun[] = Array.from({ length: 25 }, (_, i) => ({
+  id: `run-${1000 + i}`,
+  status: (['completed', 'failed', 'running', 'cancelled'][i % 4]) as RunStatus,
+  area: (['auth', 'state', 'budget', 'xdr'][i % 4]) as RunArea,
+  severity: (['low', 'medium', 'high', 'critical'][i % 4]) as RunSeverity,
+  duration: 120000 + (Math.random() * 3600000), // 2m to 1h
+  seedCount: Math.floor(10000 + Math.random() * 90000),
+  cpuInstructions: Math.floor(400000 + Math.random() * 900000),
+  memoryBytes: Math.floor(1_500_000 + Math.random() * 8_000_000),
+  minResourceFee: Math.floor(500 + Math.random() * 5000),
+  area: 'auth' as any,
+  severity: 'low' as any,
+  crashDetail: i % 4 === 1
+    ? {
+      failureCategory: i % 8 === 1 ? 'Panic' : 'InvariantViolation',
+      signature: `sig:${1000 + i}:contract::transfer:assert_balance_nonnegative`,
+      payload: JSON.stringify({
+        contract: 'token',
+        method: 'transfer',
+        args: {
+          from: 'GABCD...1234',
+          to: 'GXYZ...7890',
+          amount: 999999999,
+        },
+      }, null, 2),
+      replayAction: `cargo run --bin crash-replay -- --run-id run-${1000 + i}`,
+    }
+    : null,
+})).reverse();
 
 const ITEMS_PER_PAGE = 10;
 const CPU_WARNING = 900_000;
@@ -272,6 +304,7 @@ function HomeContent() {
       {/* Cross-run board widgets section */}
       <div className="w-full mb-12">
         <CrossRunBoardWidgets />
+        <CrossRunBoardCustomWidgets runs={runs} />
       </div>
 
       <div className="text-center max-w-3xl mb-16">
