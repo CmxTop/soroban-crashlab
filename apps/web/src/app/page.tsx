@@ -7,6 +7,8 @@ import RunHistoryTable from './RunHistoryTable';
 import RunHistoryTableSkeleton from './RunHistoryTableSkeleton';
 import Pagination from './Pagination';
 import CrashDetailDrawer from './CrashDetailDrawer';
+import ReportModal from './ReportModal';
+import { generateMarkdownReport } from './report-utils';
 import { FuzzingRun, RunStatus } from './types';
 
 // Mock data for demonstration
@@ -104,6 +106,7 @@ function HomeContent() {
   const [showDetailView, setShowDetailView] = useState(false);
   const [showHelp, setShowHelp] = useState(true);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [reportRun, setReportRun] = useState<FuzzingRun | null>(null);
   const cardsContainerRef = useRef<HTMLDivElement>(null);
 
   const selectedRunId = searchParams.get('run');
@@ -540,7 +543,7 @@ function HomeContent() {
             </ul>
           )}
         </div>
-        <RunHistoryTable runs={paginatedRuns} onSelectRun={handleOpenRunDrawer} />
+        <RunHistoryTable runs={paginatedRuns} onSelectRun={handleOpenRunDrawer} onViewReport={setReportRun} />
         {dataState === 'loading' && (
           <RunHistoryTableSkeleton rows={ITEMS_PER_PAGE} />
         )}
@@ -627,6 +630,15 @@ function HomeContent() {
             </div>
           </div>
         </div>
+      )}
+
+      {reportRun && (
+        <ReportModal
+          isOpen={true}
+          onClose={() => setReportRun(null)}
+          markdown={generateMarkdownReport(reportRun)}
+          runId={reportRun.id}
+        />
       )}
 
       {selectedRun && (
