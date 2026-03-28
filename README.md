@@ -11,10 +11,14 @@ Most contract failures happen in edge cases that are not covered by manual tests
 - convert failures into deterministic regression tests
 - review risk and state-impact signals in a frontend dashboard
 
+## Security
+
+To report a vulnerability, see our [Security Policy](.github/SECURITY.md). Do not open a public issue for security concerns.
+
 ## Repository structure
 
 - `apps/web`: Next.js frontend dashboard for runs, failures, and replay output
-- `contracts/crashlab-core`: Rust crate for core fuzzing and reproducible case generation
+- `contracts/crashlab-core`: Rust crate for core fuzzing and reproducible case generation (`WorkerPartition` / `drive_run_partitioned` split seed indices across workers deterministically; see `docs/REPRODUCIBILITY.md`)
 - `docs/`: project documentation
   - [`ARCHITECTURE.md`](docs/ARCHITECTURE.md): system architecture and data flow
   - [`REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md): deterministic guarantees and troubleshooting
@@ -24,18 +28,39 @@ Most contract failures happen in edge cases that are not covered by manual tests
 
 ## Quick start
 
+If this is your first time setting up the repo locally, start with the
+[contributor setup checklist](CONTRIBUTING.md#local-setup-checklist).
+It walks through installing Git, Node.js, npm, Rust, and optional GitHub
+tooling before you run the project checks below.
+If setup, build, test, or replay commands fail locally, jump to the
+[contributor debugging playbook](CONTRIBUTING.md#contributor-debugging-playbook).
+
 ### Prerequisites
 
+- Git
 - Node.js 22+
-- npm 9+
+- npm 10+ (the npm version bundled with Node.js 22 is fine)
 - Rust stable + Cargo
-- GitHub CLI (`gh`) authenticated for issue publishing
+- Optional: GitHub CLI (`gh`) authenticated for Wave maintenance scripts
 
-### Install and run frontend
+### Verify your toolchain
+
+```bash
+git --version
+node -v
+npm -v
+rustc -V
+cargo -V
+gh --version # optional
+```
+
+### Install web dependencies and run web checks
 
 ```bash
 cd apps/web
-npm install
+npm ci
+npm run lint
+npm run build
 npm run dev
 ```
 
@@ -43,8 +68,37 @@ npm run dev
 
 ```bash
 cd contracts/crashlab-core
-cargo test
+cargo test --all-targets
 ```
+
+### Run checkpoints (resume without redoing work)
+
+Persist a [`RunCheckpoint`](contracts/crashlab-core/src/checkpoint.rs) (JSON) with `next_seed_index` and reload it after an interruption. Use `RunCheckpoint::remaining(&seeds)` to iterate only pending seeds, and `advance_one` / `advance_by` after each completed item so resumed runs skip finished work.
+
+### Artifact retention policy
+
+Apply configurable retention windows for old run artifacts with [`RetentionPolicy`](contracts/crashlab-core/src/retention.rs). Configure `max_failure_bundles` to keep the most recent failures (sorted by descending seed ID) and `max_checkpoints_per_campaign` to retain the most advanced checkpoints per campaign. Use `RetentionPolicy::retain_failure_bundles` and `RetentionPolicy::retain_checkpoints` to determine which artifacts to prune.
+
+### Corpus export (portable seed archive)
+
+Export a deterministic, sorted corpus JSON (schema `CORPUS_ARCHIVE_SCHEMA_VERSION`) via `export_corpus_json` / `import_corpus_json`, or the CLI:
+
+```bash
+cd contracts/crashlab-core
+cargo run --bin export-corpus -- seeds.json > corpus-archive.json
+```
+
+Input may be a bare JSON array of seeds or a full archive document; output is always canonical sorted order for stable sharing and re-import.
+
+### Simulation timeout guardrails
+
+`run_simulation_with_timeout` wraps a host/contract simulation and returns `timeout_crash_signature` when wall time exceeds `SimulationTimeoutConfig::timeout_ms`. Surface the active limit in dashboards or logs with `RunMetadata::from_timeout_config`.
+
+Run metadata JSON is versioned (`schema` / `RUN_METADATA_SCHEMA_VERSION`). Persist with `save_run_metadata_json` and reload with `load_run_metadata_json` so documents without a `schema` field (older writes) are accepted and normalized to the current format without losing `simulation_timeout_ms`.
+
+### Vec / map container stress mutator
+
+[`ContainerStressMutator`](contracts/crashlab-core/src/container_stress.rs) encodes bounded vec vs map growth and sparse key stride into a 32-byte payload (configurable min/max per dimension). Register it with [`WeightedScheduler`](contracts/crashlab-core/src/scheduler.rs) alongside other mutators.
 
 ### Failing-case bundles and replay environment
 

@@ -1,36 +1,236 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import RunHistoryTable from './RunHistoryTable';
+import RunHistoryTableSkeleton from './RunHistoryTableSkeleton';
 import Pagination from './Pagination';
-import { FuzzingRun, RunStatus } from './types';
+import CrashDetailDrawer from './CrashDetailDrawer';
+import { FuzzingRun, RunStatus, RunArea, RunSeverity } from './types';
+import ReportModal from './ReportModal';
+import { generateMarkdownReport } from './report-utils';
+import CreateRunHeatmapPage55 from './create-run-heatmap-page-55';
+import AddRunComparisonCharts from './add-run-comparison-charts';
+import AddTaggingAndLabelsUi from './add-tagging-and-labels-ui';
+import AlertingSettingsPage54 from './implement-alerting-settings-page-54';
+import CrossRunBoardWidgets from './implement-cross-run-board-widgets-component';
+import CrossRunBoardCustomWidgets from './create-cross-run-board-custom-widgets-63';
+import RunClusterVisualization from './add-run-cluster-visualization';
+import RunClusterOverview from './add-run-cluster-overview';
+import FailureClusterView from './FailureClusterView';
+import MaintainerToggle from './MaintainerToggle';
+import { useMaintainerMode } from './useMaintainerMode';
+import AlertPresets from './AlertPresets';
 
 // Mock data for demonstration
 const MOCK_RUNS: FuzzingRun[] = Array.from({ length: 25 }, (_, i) => ({
   id: `run-${1000 + i}`,
   status: (['completed', 'failed', 'running', 'cancelled'][i % 4]) as RunStatus,
+  area: (['auth', 'state', 'budget', 'xdr'][i % 4]) as RunArea,
+  severity: (['low', 'medium', 'high', 'critical'][i % 4]) as RunSeverity,
   duration: 120000 + (Math.random() * 3600000), // 2m to 1h
   seedCount: Math.floor(10000 + Math.random() * 90000),
+  cpuInstructions: Math.floor(400000 + Math.random() * 900000),
+  memoryBytes: Math.floor(1_500_000 + Math.random() * 8_000_000),
+  minResourceFee: Math.floor(500 + Math.random() * 5000),
+  crashDetail: i % 4 === 1
+    ? {
+      failureCategory: i % 8 === 1 ? 'Panic' : 'InvariantViolation',
+      signature: `sig:${1000 + i}:contract::transfer:assert_balance_nonnegative`,
+      payload: JSON.stringify({
+        contract: 'token',
+        method: 'transfer',
+        args: {
+          from: 'GABCD...1234',
+          to: 'GXYZ...7890',
+          amount: 999999999,
+        },
+      }, null, 2),
+      replayAction: `cargo run --bin crash-replay -- --run-id run-${1000 + i}`,
+    }
+    : null,
 })).reverse();
 
 const ITEMS_PER_PAGE = 10;
+const CPU_WARNING = 900_000;
+const MEMORY_WARNING = 7_000_000;
+const FEE_WARNING = 3_000;
+const STATUS_OPTIONS: Array<'all' | RunStatus> = ['all', 'running', 'completed', 'failed', 'cancelled'];
 
-export default function Home() {
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatFee = (fee: number): string => `${fee.toLocaleString()} stroops`;
+
+const isExpensiveRun = (run: FuzzingRun): boolean =>
+  run.cpuInstructions >= CPU_WARNING ||
+  run.memoryBytes >= MEMORY_WARNING ||
+  run.minResourceFee >= FEE_WARNING;
+
+const toStableQueryString = (params: URLSearchParams): string => {
+  const sorted = Array.from(params.entries()).sort(([a], [b]) => a.localeCompare(b));
+  return new URLSearchParams(sorted).toString();
+};
+
+function HomeContent() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [runs, setRuns] = useState<FuzzingRun[]>([]);
+  const [dataState, setDataState] = useState<'loading' | 'error' | 'success'>('loading');
+  const [fetchAttempt, setFetchAttempt] = useState(0);
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
   const [showDetailView, setShowDetailView] = useState(false);
   const [showHelp, setShowHelp] = useState(true);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [reportRun, setReportRun] = useState<FuzzingRun | null>(null);
   const cardsContainerRef = useRef<HTMLDivElement>(null);
+  const { isMaintainer, toggle: toggleMaintainerMode, mounted: maintainerMounted } = useMaintainerMode();
 
-  const totalPages = Math.ceil(MOCK_RUNS.length / ITEMS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-  const paginatedRuns = MOCK_RUNS.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  const selectedRunId = searchParams.get('run');
+  const statusFilter = STATUS_OPTIONS.includes((searchParams.get('status') ?? 'all') as 'all' | RunStatus)
+    ? ((searchParams.get('status') ?? 'all') as 'all' | RunStatus)
+    : 'all';
+  const expensiveOnly = searchParams.get('expensive') === '1';
+  const pageParam = Number.parseInt(searchParams.get('page') ?? '1', 10);
+  const currentPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
 
-  const handlePageChange = (page: number) => {
-    setCurrentPage(page);
-    // Focus the table container when page changes for accessibility
-    cardsContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
+  const setQueryState = useCallback(
+    (updates: Record<string, string | null>) => {
+      const nextParams = new URLSearchParams(searchParams.toString());
+
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === '') {
+          nextParams.delete(key);
+          return;
+        }
+        nextParams.set(key, value);
+      });
+
+      const query = toStableQueryString(nextParams);
+      const nextUrl = query ? `${pathname}?${query}` : pathname;
+      const currentQuery = toStableQueryString(new URLSearchParams(searchParams.toString()));
+      const currentUrl = currentQuery ? `${pathname}?${currentQuery}` : pathname;
+      if (nextUrl !== currentUrl) {
+        router.replace(nextUrl, { scroll: false });
+      }
+    },
+    [pathname, router, searchParams],
+  );
+
+  const filteredRuns = useMemo(() => {
+    return runs.filter((run) => {
+      if (statusFilter !== 'all' && run.status !== statusFilter) {
+        return false;
+      }
+      if (expensiveOnly && !isExpensiveRun(run)) {
+        return false;
+      }
+      return true;
+    });
+  }, [runs, statusFilter, expensiveOnly]);
+  const stableQueryString = useMemo(
+    () => toStableQueryString(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(filteredRuns.length / ITEMS_PER_PAGE));
+  const clampedPage = Math.min(currentPage, totalPages);
+  const startIndex = (clampedPage - 1) * ITEMS_PER_PAGE;
+  const paginatedRuns = filteredRuns.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  const expensiveRuns = paginatedRuns.filter(isExpensiveRun);
+  const selectedRun = selectedRunId ? runs.find((run) => run.id === selectedRunId) ?? null : null;
+  // Simulate async data fetch with loading and error states.
+  // In production this would be a real API call (e.g. fetch('/api/runs')).
+  // startTransition is used to batch the loading reset so it's treated as a
+  // non-urgent update, which avoids the react-hooks/set-state-in-effect lint rule.
+  useEffect(() => {
+    let cancelled = false;
+    // Mark the loading reset as a low-priority transition so React batches it
+    // together with any concurrent work, avoiding a synchronous setState in effect.
+    const ctrl = new AbortController();
+    const resetAndFetch = async () => {
+      setDataState('loading');
+      setRuns([]);
+      try {
+        // Simulate a network round-trip (800ms)
+        await new Promise<void>((resolve, reject) => {
+          const t = window.setTimeout(() => {
+            if (ctrl.signal.aborted) return;
+            // ~10% chance of simulated failure to exercise the error path.
+            if (Math.random() < 0.1) reject(new Error('Simulated network error'));
+            else resolve();
+          }, 800);
+          ctrl.signal.addEventListener('abort', () => window.clearTimeout(t));
+        });
+        if (!cancelled) {
+          setRuns(MOCK_RUNS);
+          setDataState('success');
+        }
+      } catch {
+        if (!cancelled) setDataState('error');
+      }
+    };
+    // Schedule on next tick so the setState calls go through React's batching.
+    const t = window.setTimeout(() => { void resetAndFetch(); }, 0);
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+      window.clearTimeout(t);
+    };
+  }, [fetchAttempt]);
+
+  useEffect(() => {
+    if (selectedRunId && !selectedRun) {
+      setQueryState({ run: null });
+    }
+  }, [selectedRun, selectedRunId, setQueryState]);
+
+  useEffect(() => {
+    if (currentPage !== clampedPage) {
+      setQueryState({ page: clampedPage === 1 ? null : String(clampedPage) });
+    }
+  }, [clampedPage, currentPage, setQueryState]);
+
+  const handleOpenRunDrawer = useCallback(
+    (runId: string) => setQueryState({ run: runId }),
+    [setQueryState],
+  );
+
+  const handleCloseRunDrawer = useCallback(() => setQueryState({ run: null }), [setQueryState]);
+
+  const handleReplayComplete = useCallback((newRun: FuzzingRun) => {
+    setRuns((prev) => [newRun, ...prev]);
+  }, []);
+
+  const handlePageChange = useCallback(
+    (page: number) => {
+      setQueryState({ page: page <= 1 ? null : String(page) });
+      cardsContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+    [setQueryState],
+  );
+
+  const handleCopyPermalink = useCallback(async () => {
+    try {
+      const stableQuery = toStableQueryString(new URLSearchParams(searchParams.toString()));
+      const permalink = `${window.location.origin}${pathname}${stableQuery ? `?${stableQuery}` : ''}`;
+      await navigator.clipboard.writeText(permalink);
+      setCopyState('copied');
+    } catch {
+      setCopyState('failed');
+    }
+  }, [pathname, searchParams]);
+
+  useEffect(() => {
+    if (copyState === 'idle') return;
+    const timer = window.setTimeout(() => setCopyState('idle'), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
 
   const cards = [
     {
@@ -58,7 +258,12 @@ export default function Home() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't handle if modal is open and it's not Escape
+      const runDrawerOpen = Boolean(searchParams.get('run'));
+      if (runDrawerOpen && e.key === 'Escape') {
+        e.preventDefault();
+        handleCloseRunDrawer();
+        return;
+      }
       if (showDetailView && e.key !== 'Escape') return;
 
       switch (e.key) {
@@ -91,7 +296,7 @@ export default function Home() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showDetailView, cards.length]);
+  }, [showDetailView, cards.length, searchParams, handleCloseRunDrawer]);
 
   const handleCardClick = (index: number) => {
     setSelectedCardIndex(index);
@@ -100,6 +305,23 @@ export default function Home() {
 
   return (
     <div className="flex flex-col items-center justify-center py-20 px-8 max-w-5xl mx-auto w-full">
+      {/* Role toggle */}
+      <div className="w-full flex justify-end mb-6">
+        <MaintainerToggle
+          isMaintainer={isMaintainer}
+          onToggle={toggleMaintainerMode}
+          mounted={maintainerMounted}
+        />
+      </div>
+
+      {/* Cross-run board widgets section — maintainer only */}
+      {isMaintainer && (
+        <div className="w-full mb-12">
+          <CrossRunBoardWidgets />
+          <CrossRunBoardCustomWidgets runs={runs} />
+        </div>
+      )}
+
       <div className="text-center max-w-3xl mb-16">
         <h1 className="text-5xl font-bold tracking-tight mb-6 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
           Bulletproof Your Soroban Smart Contracts
@@ -109,7 +331,6 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Help Panel */}
       {showHelp && (
         <div className="mb-8 w-full max-w-3xl border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-950/30">
           <div className="flex items-start justify-between">
@@ -131,6 +352,72 @@ export default function Home() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Card 1: Create Campaign */}
+            <div className="border border-blue-200 dark:border-blue-800 rounded-xl p-6 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-950/50 dark:to-blue-900/30">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-lg bg-blue-600 dark:bg-blue-500 flex items-center justify-center text-white">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100">Create Your First Campaign</h3>
+              </div>
+              <p className="text-sm text-blue-800 dark:text-blue-200 mb-4">
+                Set up a fuzzing campaign to start testing your smart contracts for edge cases and vulnerabilities.
+              </p>
+              <button className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition">
+                Create Campaign
+              </button>
+            </div>
+
+            {/* Card 2: Read Docs */}
+            <div className="border border-purple-200 dark:border-purple-800 rounded-xl p-6 bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-950/50 dark:to-purple-900/30">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-lg bg-purple-600 dark:bg-purple-500 flex items-center justify-center text-white">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-purple-900 dark:text-purple-100">Read the Documentation</h3>
+              </div>
+              <p className="text-sm text-purple-800 dark:text-purple-200 mb-4">
+                Learn how to configure campaigns, write invariants, and interpret fuzzing results.
+              </p>
+              <a
+                href="https://github.com/SorobanCrashLab/soroban-crashlab#readme"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full py-2 px-4 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-medium transition text-center"
+              >
+                View Docs
+              </a>
+            </div>
+
+            {/* Card 3: View Examples */}
+            <div className="border border-green-200 dark:border-green-800 rounded-xl p-6 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-950/50 dark:to-green-900/30">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-lg bg-green-600 dark:bg-green-500 flex items-center justify-center text-white">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-green-900 dark:text-green-100">View Examples</h3>
+              </div>
+              <p className="text-sm text-green-800 dark:text-green-200 mb-4">
+                Explore example contracts and campaigns to understand best practices and common patterns.
+              </p>
+              <a
+                href="https://github.com/SorobanCrashLab/soroban-crashlab/tree/main/contracts"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full py-2 px-4 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition text-center"
+              >
+                Browse Examples
+              </a>
+            </div>
           </div>
         </div>
       )}
@@ -180,23 +467,153 @@ export default function Home() {
         })}
       </div>
 
-      {/* Run History Section */}
+      {dataState === 'loading' && (
+        <div className="w-full h-48 rounded-xl bg-zinc-100 dark:bg-zinc-800 animate-pulse mb-6" />
+      )}
+      {dataState === 'success' && <RunClusterOverview runs={runs} />}
+
       <div className="w-full mb-8">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold">Recent Fuzzing Runs</h2>
-          <div className="px-3 py-1 bg-zinc-100 dark:bg-zinc-800 rounded-lg text-xs font-medium text-zinc-500">
-            {MOCK_RUNS.length} Total Runs
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleCopyPermalink}
+              className="px-3 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 text-xs font-medium hover:bg-zinc-50 dark:hover:bg-zinc-900 transition"
+            >
+              Copy report link
+            </button>
+            <div className="px-3 py-1 bg-zinc-100 dark:bg-zinc-800 rounded-lg text-xs font-medium text-zinc-500">
+              {filteredRuns.length} Matching Runs
+            </div>
           </div>
         </div>
-        <RunHistoryTable runs={paginatedRuns} />
+
+        <div className="mb-4 flex flex-col md:flex-row md:items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-zinc-600 dark:text-zinc-400">Status</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setQueryState({ status: e.target.value === 'all' ? null : e.target.value, page: null })}
+              className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-sm"
+            >
+              <option value="all">All</option>
+              <option value="running">Running</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+            <input
+              type="checkbox"
+              checked={expensiveOnly}
+              onChange={(e) => setQueryState({ expensive: e.target.checked ? '1' : null, page: null })}
+              className="h-4 w-4 rounded border-zinc-300"
+            />
+            Only expensive runs
+          </label>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Shared links preserve page, selected run, and filters.
+          </p>
+        </div>
+
+        {copyState === 'copied' && (
+          <p className="mb-3 text-sm text-green-700 dark:text-green-400">Permalink copied to clipboard.</p>
+        )}
+        {copyState === 'failed' && (
+          <p className="mb-3 text-sm text-red-700 dark:text-red-400">Could not copy link. Copy the URL from your browser address bar.</p>
+        )}
+
+        {isMaintainer && (
+          <div className="mb-5 border border-amber-200 dark:border-amber-900/50 rounded-xl p-4 bg-amber-50/70 dark:bg-amber-950/20">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-200">Resource Fee Insight</h3>
+              <span className="text-xs text-amber-800 dark:text-amber-300">
+                thresholds: cpu &ge; {CPU_WARNING.toLocaleString()}, mem &ge; {formatBytes(MEMORY_WARNING)}, fee &ge; {formatFee(FEE_WARNING)}
+              </span>
+            </div>
+
+            {expensiveRuns.length === 0 ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">No expensive runs on this page.</p>
+            ) : (
+              <ul className="space-y-2">
+                {expensiveRuns.map((run) => (
+                  <li key={run.id} className="text-sm flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-white/60 dark:bg-zinc-900/40 rounded-lg px-3 py-2 border border-amber-100 dark:border-amber-900/40">
+                    <div className="font-mono text-zinc-800 dark:text-zinc-200">{run.id}</div>
+                    <div className="text-zinc-700 dark:text-zinc-300">
+                      cpu {run.cpuInstructions.toLocaleString()} &middot; mem {formatBytes(run.memoryBytes)} &middot; min fee {formatFee(run.minResourceFee)}
+                    </div>
+                    <Link href={`/runs/${run.id}`} className="text-amber-700 dark:text-amber-300 hover:underline underline-offset-4 font-medium">
+                      View run details
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {isMaintainer && (
+          <FailureClusterView runs={runs} pathname={pathname} queryString={stableQueryString} />
+        )}
+        <RunHistoryTable runs={paginatedRuns} onSelectRun={handleOpenRunDrawer} onViewReport={setReportRun} />
+        {dataState === 'loading' && (
+          <RunHistoryTableSkeleton rows={ITEMS_PER_PAGE} />
+        )}
+        {dataState === 'error' && (
+          <div className="flex flex-col items-center gap-4 border border-red-200 dark:border-red-900/50 rounded-xl p-8 bg-red-50/60 dark:bg-red-950/20 text-center">
+            <div className="h-12 w-12 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center">
+              <svg className="w-6 h-6 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+            </div>
+            <div>
+              <p className="font-semibold text-red-900 dark:text-red-100">Failed to load fuzzing runs</p>
+              <p className="text-sm text-red-700 dark:text-red-300 mt-1">Check your connection and try again.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFetchAttempt((n) => n + 1)}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl transition-all shadow active:scale-95 text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582M20 20v-5h-.581M5.635 15A9 9 0 1118.365 9" />
+              </svg>
+              Retry
+            </button>
+          </div>
+        )}
         <Pagination
-          currentPage={currentPage}
+          currentPage={clampedPage}
           totalPages={totalPages}
           onPageChange={handlePageChange}
         />
       </div>
 
-      {/* Detail View Modal */}
+      <div className="mb-12 w-full">
+        <AddRunComparisonCharts runs={filteredRuns} />
+      </div>
+
+      <div className="mb-12 w-full">
+        <AddTaggingAndLabelsUi runs={filteredRuns} />
+      </div>
+
+      <div className="mb-12 w-full">
+        <AlertPresets onSelectPreset={(config) => console.log('Applied Alert Preset:', config)} />
+      </div>
+
+      {isMaintainer && (
+        <div className="mb-12 w-full">
+          <CreateRunHeatmapPage55 />
+        </div>
+      )}
+
+      {isMaintainer && (
+        <div className="mb-12 w-full">
+          <AlertingSettingsPage54 />
+        </div>
+      )}
+
       {showDetailView && (
         <div
           className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center z-50 p-4"
@@ -252,6 +669,24 @@ export default function Home() {
         </div>
       )}
 
+      {reportRun && (
+        <ReportModal
+          isOpen={true}
+          onClose={() => setReportRun(null)}
+          markdown={generateMarkdownReport(reportRun)}
+          runId={reportRun.id}
+        />
+      )}
+
+      {selectedRun && (
+        <CrashDetailDrawer
+          key={selectedRun.id}
+          run={selectedRun}
+          onClose={handleCloseRunDrawer}
+          onReplayComplete={handleReplayComplete}
+        />
+      )}
+
       <div className="mt-16 text-center border-t border-black/[.08] dark:border-white/[.145] pt-12 w-full">
         <h2 className="text-2xl font-bold mb-4">Stellar Wave 3 is Open!</h2>
         <p className="text-zinc-600 dark:text-zinc-400 mb-8 max-w-2xl mx-auto">
@@ -277,5 +712,17 @@ export default function Home() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={
+      <div className="flex flex-1 items-center justify-center min-h-[50vh] text-zinc-500 dark:text-zinc-400">
+        Loading…
+      </div>
+    }>
+      <HomeContent />
+    </Suspense>
   );
 }

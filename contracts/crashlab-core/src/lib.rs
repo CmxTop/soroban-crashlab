@@ -11,7 +11,11 @@ pub use retry::{RetryConfig, SimulationError, execute_with_retry};
 pub use health::{
     FailureMetrics, HealthMonitor, HealthStatus, HealthSummary, QueueMetrics, ThroughputMetrics,
 };
-pub use reproducer::{FlakyDetector, ReproReport, filter_ci_pack};
+pub use prng::SeededPrng;
+pub use reproducer::{
+    FlakyDetector, ReproReport, filter_ci_pack, shrink_bundle_payload,
+    shrink_seed_preserving_signature,
+};
 pub use taxonomy::{FailureClass, classify_failure, group_by_class};
 
 pub mod seed_validator;
@@ -19,6 +23,9 @@ pub use seed_validator::{SeedSchema, SeedValidationError, Validate};
 
 pub mod scheduler;
 pub use scheduler::{Mutator, SchedulerError, WeightedScheduler};
+
+pub mod campaign_presets;
+pub use campaign_presets::{CampaignParameters, CampaignPreset, ParseCampaignPresetError};
 pub mod replay;
 pub use replay::{ReplayResult, replay_seed_bundle};
 
@@ -30,10 +37,107 @@ pub use env_fingerprint::{
 pub mod boundary;
 pub use boundary::{BoundaryMutator, generate_boundary_vectors};
 
+pub mod enum_flip;
+pub use enum_flip::{EnumVariantFlipMutator, is_invalid_enum_tag_payload};
+
+pub mod decimal_precision;
+pub use decimal_precision::{
+    DecimalBoundaryCase, DecimalPrecisionMutator, decimal_boundary_cases,
+    generate_decimal_precision_vectors,
+};
+
 pub mod bundle_persist;
 pub use bundle_persist::{
-    read_case_bundle_json, save_case_bundle_json, write_case_bundle_json, BundlePersistError,
-    CaseBundleDocument, CASE_BUNDLE_SCHEMA_VERSION, SUPPORTED_BUNDLE_SCHEMAS,
+    BundlePersistError, CASE_BUNDLE_SCHEMA_VERSION, CaseBundleDocument, SUPPORTED_BUNDLE_SCHEMAS,
+    read_case_bundle_json, save_case_bundle_json, write_case_bundle_json,
+};
+
+pub mod artifact_compress;
+pub use artifact_compress::{compress_artifact, decompress_artifact};
+
+pub mod fixture_compat;
+pub use fixture_compat::{CompatReport, CompatWarning, check_bundle_fixtures, check_seed_fixtures};
+
+pub mod fixture_sanitize;
+pub use fixture_sanitize::{
+    export_sanitized_scenario_json, sanitize_bundle_document_for_sharing,
+    sanitize_bundle_for_sharing, sanitize_payload_fragments, sanitize_seed_for_sharing,
+    sanitized_failure_scenario, save_sanitized_case_bundle_json,
+};
+
+pub mod checkpoint;
+pub use checkpoint::{
+    CheckpointError, RUN_CHECKPOINT_SCHEMA_VERSION, RunCheckpoint, load_run_checkpoint_json,
+    save_run_checkpoint_json,
+};
+
+pub mod corpus;
+pub use corpus::{
+    CORPUS_ARCHIVE_SCHEMA_VERSION, CorpusArchive, CorpusError, corpus_archive_from_seeds,
+    export_corpus_json, import_corpus_json,
+};
+
+pub mod retention;
+pub use retention::RetentionPolicy;
+
+pub mod scenario_export;
+pub use scenario_export::{
+    FailureScenario, export_crash_report_markdown, export_rust_regression_fixture,
+    export_scenario_json, export_suite_json,
+};
+
+pub mod regression_suite;
+pub use regression_suite::{
+    RegressionCaseResult, RegressionSuiteSummary, load_regression_suite_json,
+    run_regression_suite, run_regression_suite_from_json,
+};
+
+pub mod regression_grouping;
+pub use regression_grouping::{
+    RegressionGroupKey, export_rust_regression_suite, group_bundles_by_regression_group,
+    regression_group_key, regression_group_keys_sorted, regression_group_module_ident,
+};
+
+pub mod simulation;
+pub use simulation::{
+    RunMetadata, RunMetadataError, SimulationTimeoutConfig, load_run_metadata_json,
+    run_simulation_with_timeout, save_run_metadata_json, timeout_crash_signature,
+    RUN_METADATA_SCHEMA_VERSION, SUPPORTED_RUN_METADATA_SCHEMAS,
+};
+
+pub mod container_stress;
+pub use container_stress::{
+    ContainerStressConfig, ContainerStressMutator, generate_container_stress_grid,
+};
+
+pub mod crash_index;
+pub use crash_index::{CrashGroup, CrashGroupRecord, CrashIndex, CrashIndexSummary};
+
+pub mod mutation_budget;
+pub use mutation_budget::{BudgetReport, MutationBudget};
+
+pub mod seed_novelty;
+pub use seed_novelty::{
+    DiscoveryBenchmark, NoveltyPrioritizer, SeedNoveltyCandidate, benchmark_novelty_discovery,
+};
+pub mod stale_detector;
+pub use stale_detector::{StaleDetectorConfig, StaleRunDetector, StaleStatus};
+
+pub mod worker_partition;
+pub use worker_partition::{WorkerPartition, WorkerPartitionError, worker_for_seed};
+
+pub mod run_control;
+pub use run_control::{
+    CancelSignal, RunId, RunSummary, RunTerminalState, cancel_marker_path, cancel_requested,
+    clear_cancel_request, default_state_dir, drive_run, drive_run_partitioned, request_cancel_run,
+};
+
+pub mod rpc_envelope;
+pub use rpc_envelope::{RpcEnvelopeCapture, RpcRequestEnvelope, RpcResponseEnvelope};
+
+pub mod stellar_address;
+pub use stellar_address::{
+    AddressMutatorConfig, AddressType, StellarAddressMutator, generate_address_vectors,
 };
 
 /// Wrapper for the legacy bit-flipper mutation logic.
@@ -90,6 +194,8 @@ pub struct CaseBundle {
     pub environment: Option<EnvironmentFingerprint>,
     /// Raw failure output (stderr, host error bytes, trace snippet, etc.).
     pub failure_payload: Vec<u8>,
+    /// Captured RPC request/response envelopes for reproducibility auditing.
+    pub rpc_envelope: Option<RpcEnvelopeCapture>,
 }
 
 impl CaseBundle {
@@ -104,11 +210,7 @@ impl CaseBundle {
 
 pub fn mutate_seed(seed: &CaseSeed) -> CaseSeed {
     let mut rng = SeededPrng::new(seed.id);
-    let payload = seed
-        .payload
-        .iter()
-        .map(|b| b ^ rng.next_byte())
-        .collect();
+    let payload = seed.payload.iter().map(|b| b ^ rng.next_byte()).collect();
 
     CaseSeed {
         id: seed.id,
@@ -125,6 +227,8 @@ pub fn classify(seed: &CaseSeed) -> CrashSignature {
         "empty-input"
     } else if seed.payload.len() > 64 {
         "oversized-input"
+    } else if is_invalid_enum_tag_payload(&seed.payload) {
+        "invalid-enum-tag"
     } else {
         "runtime-failure"
     };
@@ -146,6 +250,7 @@ pub fn to_bundle(seed: CaseSeed) -> CaseBundle {
         signature,
         environment: None,
         failure_payload: Vec::new(),
+        rpc_envelope: None,
     }
 }
 
@@ -159,6 +264,20 @@ pub fn to_bundle_with_environment(seed: CaseSeed) -> CaseBundle {
         signature,
         environment,
         failure_payload: Vec::new(),
+        rpc_envelope: None,
+    }
+}
+
+/// Like [`to_bundle`], but attaches an RPC envelope capture for reproducibility auditing.
+pub fn to_bundle_with_rpc_envelope(seed: CaseSeed, envelope: RpcEnvelopeCapture) -> CaseBundle {
+    let mutated = mutate_seed(&seed);
+    let signature = classify(&mutated);
+    CaseBundle {
+        seed: mutated,
+        signature,
+        environment: None,
+        failure_payload: Vec::new(),
+        rpc_envelope: Some(envelope),
     }
 }
 
@@ -191,6 +310,16 @@ mod tests {
         };
         let sig = classify(&seed);
         assert_eq!(sig.category, "empty-input");
+    }
+
+    #[test]
+    fn classification_detects_invalid_enum_tag_distinct_from_runtime_failure() {
+        let seed = CaseSeed {
+            id: 11,
+            payload: vec![0xE0, 0xFF, 0xAA],
+        };
+        let sig = classify(&seed);
+        assert_eq!(sig.category, "invalid-enum-tag");
     }
 
     #[test]
