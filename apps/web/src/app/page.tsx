@@ -12,6 +12,7 @@ import ReportModal from './ReportModal';
 import { generateMarkdownReport } from './report-utils';
 import CreateRunHeatmapPage55 from './create-run-heatmap-page-55';
 import AddRunComparisonCharts from './add-run-comparison-charts';
+import AddTaggingAndLabelsUi from './add-tagging-and-labels-ui';
 import AlertingSettingsPage54 from './implement-alerting-settings-page-54';
 
 import CrossRunBoardWidgets from './implement-cross-run-board-widgets-component';
@@ -567,6 +568,10 @@ function HomeContent() {
 
       <div className="mb-12 w-full">
         <AddRunComparisonCharts runs={filteredRuns} />
+      </div>
+
+      <div className="mb-12 w-full">
+        <AddTaggingAndLabelsUi runs={filteredRuns} />
       </div>
 
       <div className="mb-12 w-full">
